@@ -329,7 +329,7 @@ All 311 complaint data is fetched live from the NYC Open Data API at page load. 
 
 ## 14. Known limitations and caveats
 
-1. **311 complaints reflect who has called, not where problems exist.** Complaint volume is a measure of reporting behavior, not an objective inventory of streetlight outages. Neighborhoods differ in their awareness of and access to the 311 system, and many outages are never reported. Areas with lower complaint counts may have just as many dark streetlights as areas with higher counts — they may simply have fewer residents who know to call 311 or who believe it will make a difference. This data is an important signal of where residents see a problem, but it is subject to reporting bias and should not be treated as a complete picture of dark streets.
+1. **311 complaints reflect who has called, not where problems exist.** Complaint volume is a measure of reporting behavior, not an objective inventory of streetlight outages. Neighborhoods differ in their propensity for using the 311 system, and many outages are never reported. Areas with lower complaint counts may have just as many dark streetlights as areas with higher counts — they may simply have fewer residents who know to call 311 or who believe it will make a difference. This data is an important signal of where residents see a problem, but it is subject to reporting bias and should not be treated as a complete picture of dark streets.
 
 2. **Address-based filtering is imperfect.** The word-matching exclusion filter can produce false positives (e.g., "Park Ave" is excluded because it contains "park") and false negatives (a park complaint filed with a nearby street address would be included).
 

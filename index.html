@@ -456,34 +456,30 @@ function filterComplaints(raw) {
   });
 }
 
-const CACHE_KEY = '311-streetlight-data';
-const CACHE_VERSION = '2024-v3';
+// Load pre-built static data file (fast, from CDN)
+async function loadStaticData() {
+  const res = await fetch('complaints.json');
+  if (!res.ok) throw new Error(`Static file: HTTP ${res.status}`);
+  const data = await res.json();
 
-function loadCache() {
-  try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (!cached) return null;
-    const parsed = JSON.parse(cached);
-    if (parsed.version !== CACHE_VERSION) return null;
-    // Cache is valid for 6 hours
-    if (Date.now() - parsed.timestamp > 6 * 60 * 60 * 1000) return null;
-    return parsed.data;
-  } catch { return null; }
+  // Expand compact format back to full objects
+  const descriptors = data.d;
+  const boroMap = data.b;
+  return data.c.map(r => ({
+    latitude: String(r[0]),
+    longitude: String(r[1]),
+    descriptor: descriptors[r[2]],
+    created_date: r[3],
+    incident_address: r[4],
+    borough: boroMap[r[5]] || r[5],
+    community_board: r[6],
+    status: r[7] === 1 ? 'Open' : 'Closed'
+  }));
 }
 
-function saveCache(data) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({
-      version: CACHE_VERSION,
-      timestamp: Date.now(),
-      data: data
-    }));
-  } catch { /* localStorage full or unavailable */ }
-}
-
-// Progressive fetch with callback after each batch
-async function fetchAll(onBatch) {
-  const limit = 5000;
+// Background API refresh to catch new complaints since static file was built
+async function fetchFromAPI() {
+  const limit = 50000;
   let offset = 0;
   let retries = 0;
   const raw = [];
@@ -491,7 +487,7 @@ async function fetchAll(onBatch) {
   const where = `complaint_type='Street Light Condition' AND created_date>'${DATE_STR}' AND latitude IS NOT NULL`;
 
   while (true) {
-    const url = `${API_BASE}?$where=${encodeURIComponent(where)}&$select=descriptor,created_date,latitude,longitude,incident_address,borough,community_board,status&$limit=${limit}&$offset=${offset}&$order=created_date DESC`;
+    const url = `${API_BASE}?$where=${encodeURIComponent(where)}&$select=descriptor,created_date,latitude,longitude,incident_address,borough,community_board,status&$limit=${limit}&$offset=${offset}&$order=created_date+DESC`;
 
     try {
       const res = await fetch(url);
@@ -500,17 +496,10 @@ async function fetchAll(onBatch) {
       if (!data.length) break;
 
       raw.push(...data);
-      const filtered = filterComplaints(data);
-      if (filtered.length > 0) {
-        allComplaints.push(...filtered);
-        document.getElementById('load-count').textContent = allComplaints.length.toLocaleString();
-        if (onBatch) onBatch();
-      }
-
       offset += limit;
       retries = 0;
       if (data.length < limit) break;
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 50));
     } catch (err) {
       retries++;
       if (retries > 3) break;
@@ -518,8 +507,7 @@ async function fetchAll(onBatch) {
     }
   }
 
-  // Save full raw data to cache for fast reload
-  saveCache(raw);
+  return filterComplaints(raw);
 }
 
 function getHexColor(count) {
@@ -1134,10 +1122,6 @@ async function init() {
   // Start loading census tracts in background
   const tractPromise = loadCensusTracts();
 
-  // Check cache first
-  const cached = loadCache();
-  let mapShown = false;
-
   function rebuildMap() {
     if (hexLayer) map.removeLayer(hexLayer);
     if (pointLayer) map.removeLayer(pointLayer);
@@ -1157,45 +1141,36 @@ async function init() {
     updateStats(allComplaints);
   }
 
-  if (cached) {
-    // Instant load from cache
-    document.querySelector('.loading-text').textContent = 'Loading from cache...';
-    allComplaints = filterComplaints(cached);
+  // Step 1: Load static file (fast, ~600KB gzipped from CDN)
+  document.querySelector('.loading-text').textContent = 'Loading complaint data...';
+  try {
+    const staticData = await loadStaticData();
+    allComplaints = staticData;
     document.getElementById('load-count').textContent = allComplaints.length.toLocaleString();
-
     rebuildMap();
     document.getElementById('loading-overlay').classList.add('hidden');
-    mapShown = true;
-
-    // Refresh from API in background
-    allComplaints = [];
-    fetchAll(() => {}).then(() => {
-      rebuildMap();
-      tractPromise.then(() => assignCensusTracts(allComplaints));
-    });
-  } else {
-    // First visit — show map after first batch arrives
+  } catch (err) {
+    console.warn('Static file failed, falling back to API:', err);
     document.querySelector('.loading-text').textContent = 'Fetching NYC 311 data...';
-    let firstBatch = true;
-    await fetchAll(() => {
-      if (firstBatch && allComplaints.length > 0) {
-        firstBatch = false;
-        rebuildMap();
-        document.getElementById('loading-overlay').classList.add('hidden');
-        mapShown = true;
-      }
-    });
-
-    // Final rebuild with all data
+    allComplaints = await fetchFromAPI();
+    document.getElementById('load-count').textContent = allComplaints.length.toLocaleString();
     rebuildMap();
-    if (!mapShown) {
-      document.getElementById('loading-overlay').classList.add('hidden');
-    }
+    document.getElementById('loading-overlay').classList.add('hidden');
   }
 
-  // Assign census tracts once boundaries are loaded
+  // Step 2: Assign census tracts
   await tractPromise;
   assignCensusTracts(allComplaints);
+
+  // Step 3: Background API refresh for any newer complaints
+  fetchFromAPI().then(fresh => {
+    if (fresh.length > allComplaints.length + 10) {
+      // Meaningful new data — rebuild
+      allComplaints = fresh;
+      rebuildMap();
+      assignCensusTracts(allComplaints);
+    }
+  }).catch(() => { /* silent — static data is good enough */ });
 
   // Listeners
   document.getElementById('borough-filter').addEventListener('change', applyFilters);
@@ -1211,19 +1186,93 @@ async function init() {
   });
 }
 
-// Address search
+// Address search with autocomplete
 (function() {
   const input = document.getElementById('search-input');
   const btn = document.getElementById('search-btn');
   const resultsDiv = document.getElementById('search-results');
   const statusDiv = document.getElementById('search-status');
   let searchMarker = null;
+  let debounceTimer = null;
+  let addressIndex = null;
+
+  // Build address index from loaded complaints (called after data loads)
+  function buildAddressIndex() {
+    const addrMap = new Map();
+    for (const c of allComplaints) {
+      const addr = c.incident_address || c.a;
+      if (!addr) continue;
+      if (!addrMap.has(addr)) {
+        addrMap.set(addr, { count: 0, lat: 0, lng: 0, borough: c.borough || c.b || '', cb: c.community_board || c.cb || '' });
+      }
+      const entry = addrMap.get(addr);
+      entry.count++;
+      entry.lat += parseFloat(c.latitude || c.lat);
+      entry.lng += parseFloat(c.longitude || c.lng);
+    }
+    // Pre-sort by count so top results come first
+    addressIndex = [...addrMap.entries()]
+      .map(([addr, d]) => ({ addr, count: d.count, lat: d.lat / d.count, lng: d.lng / d.count, borough: d.borough, cb: d.cb }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  // Autocomplete from complaint data
+  function showAutocomplete(query) {
+    if (!addressIndex || query.length < 2) { resultsDiv.style.display = 'none'; return; }
+
+    const q = query.toUpperCase();
+    const matches = addressIndex.filter(e => e.addr.includes(q)).slice(0, 8);
+    if (!matches.length) { resultsDiv.style.display = 'none'; return; }
+
+    resultsDiv.style.display = 'block';
+    resultsDiv.innerHTML = '';
+    for (const m of matches) {
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;';
+      const neighborhood = getNeighborhood(m.cb);
+      div.innerHTML = `<span>${titleCase(m.addr)}${neighborhood ? '<span style="color:var(--text-dim);font-size:10px;margin-left:6px;">' + neighborhood + '</span>' : ''}</span><span style="color:var(--amber);font-size:11px;font-weight:600;">${m.count}</span>`;
+      div.addEventListener('mouseenter', () => div.style.background = 'var(--surface-hover)');
+      div.addEventListener('mouseleave', () => div.style.background = 'none');
+      div.addEventListener('click', () => {
+        input.value = titleCase(m.addr);
+        goToLocal(m);
+        resultsDiv.style.display = 'none';
+      });
+      resultsDiv.appendChild(div);
+    }
+  }
+
+  function goToLocal(m) {
+    if (searchMarker) map.removeLayer(searchMarker);
+
+    const complaints = m.count;
+    searchMarker = L.circleMarker([m.lat, m.lng], {
+      radius: 10,
+      fillColor: '#dde44c',
+      fillOpacity: 0.9,
+      color: '#fff',
+      weight: 2
+    }).addTo(map);
+
+    const neighborhood = getNeighborhood(m.cb);
+    searchMarker.bindPopup(`<div style="font-size:13px;"><strong>${titleCase(m.addr)}</strong><br><span style="color:var(--text-dim);font-size:11px;">${neighborhood ? neighborhood + ', ' : ''}${titleCase(m.borough)}</span><br><span style="color:var(--amber);font-weight:600;">${complaints} complaint${complaints !== 1 ? 's' : ''}</span></div>`).openPopup();
+
+    map.flyTo([m.lat, m.lng], 16, { duration: 1 });
+    showClearLink();
+  }
 
   async function doSearch() {
     const query = input.value.trim();
     if (!query) return;
 
-    // Append "New York City" if not already present
+    // First check local data
+    if (addressIndex) {
+      const q = query.toUpperCase();
+      const exact = addressIndex.find(e => e.addr === q);
+      if (exact) { goToLocal(exact); resultsDiv.style.display = 'none'; return; }
+    }
+
+    // Fall back to Nominatim geocoder
     const fullQuery = /new york|nyc|brooklyn|bronx|queens|manhattan|staten island/i.test(query)
       ? query
       : query + ', New York City';
@@ -1243,11 +1292,10 @@ async function init() {
       }
 
       if (results.length === 1) {
-        goToResult(results[0]);
+        goToGeocode(results[0]);
         return;
       }
 
-      // Show multiple results
       statusDiv.style.display = 'none';
       resultsDiv.style.display = 'block';
       resultsDiv.innerHTML = '';
@@ -1258,7 +1306,7 @@ async function init() {
         div.addEventListener('mouseenter', () => div.style.background = 'var(--surface-hover)');
         div.addEventListener('mouseleave', () => div.style.background = 'none');
         div.addEventListener('click', () => {
-          goToResult(r);
+          goToGeocode(r);
           resultsDiv.style.display = 'none';
         });
         resultsDiv.appendChild(div);
@@ -1268,7 +1316,7 @@ async function init() {
     }
   }
 
-  function goToResult(r) {
+  function goToGeocode(r) {
     const lat = parseFloat(r.lat);
     const lng = parseFloat(r.lon);
 
@@ -1286,7 +1334,10 @@ async function init() {
     searchMarker.bindPopup(`<div style="font-size:13px;"><strong>${label}</strong><br><span style="color:var(--text-dim);font-size:11px;">Search result</span></div>`).openPopup();
 
     map.flyTo([lat, lng], 16, { duration: 1 });
+    showClearLink();
+  }
 
+  function showClearLink() {
     statusDiv.style.display = 'block';
     statusDiv.innerHTML = `<span style="color:var(--vc-chartreuse);">Showing results near this location.</span> <a href="#" id="clear-search" style="color:var(--text-secondary);text-decoration:underline;">Clear</a>`;
     document.getElementById('clear-search').addEventListener('click', (e) => {
@@ -1298,15 +1349,27 @@ async function init() {
     });
   }
 
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => showAutocomplete(input.value.trim()), 150);
+  });
+
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') doSearch();
+    if (e.key === 'Enter') { resultsDiv.style.display = 'none'; doSearch(); }
   });
   btn.addEventListener('click', doSearch);
 
-  // Close results on outside click
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#address-search')) resultsDiv.style.display = 'none';
   });
+
+  // Build index once data is loaded — re-check periodically
+  const indexInterval = setInterval(() => {
+    if (allComplaints.length > 0 && !addressIndex) {
+      buildAddressIndex();
+      clearInterval(indexInterval);
+    }
+  }, 500);
 })();
 
 init().catch(err => {

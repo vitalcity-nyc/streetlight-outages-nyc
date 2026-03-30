@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>311 Streetlight Outage Map - NYC</title>
+<meta name="description" content="Mapping chronic street light outages across New York City using 311 complaint data. Hexagonal grid reveals neighborhood-level dark zones.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #1c2129;
+  --border: rgba(255,255,255,0.08);
+  --text: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-dim: #6e7681;
+  --amber: #f0b429;
+  --red: #f85149;
+  --orange: #db6d28;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --vc-chartreuse: #dde44c;
+}
+
+html, body { height: 100%; overflow: hidden; font-family: var(--font); background: var(--bg); color: var(--text); }
+#map { position: absolute; inset: 0; z-index: 1; }
+
+.leaflet-popup-content-wrapper {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important;
+}
+.leaflet-popup-content { font-family: var(--font) !important; font-size: 13px !important; margin: 14px 16px !important; }
+.leaflet-popup-tip { background: var(--surface) !important; }
+.leaflet-popup-close-button { color: var(--text-secondary) !important; }
+
+#panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  z-index: 1000;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+#panel h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; }
+#panel .subtitle { font-size: 12px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.5; }
+
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+.stat-card { background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+.stat-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; }
+.stat-card .value { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.stat-card .value.amber { color: var(--amber); }
+.stat-card .value.red { color: var(--red); }
+.stat-card .value.orange { color: var(--orange); }
+
+.legend { margin-bottom: 16px; }
+.legend-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 8px; }
+
+.legend-gradient {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(to right, rgba(80,80,50,0.15), rgba(170,85,30,0.45), rgba(210,55,50,0.7), rgba(200,25,25,0.85), rgba(220,15,15,0.95));
+  margin-bottom: 4px;
+}
+
+.legend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.filter-section { border-top: 1px solid var(--border); padding-top: 12px; }
+.filter-section label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 6px; }
+
+.filter-section select {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.filter-section select:focus { outline: none; border-color: var(--amber); }
+
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.view-btn, .rank-btn {
+  flex: 1;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.view-btn.active, .rank-btn.active { background: var(--surface-hover); color: var(--text); }
+.view-btn:hover:not(.active), .rank-btn:hover:not(.active) { color: var(--text-secondary); }
+
+.chronic-toggle {
+  background: rgba(248,81,73,0.08);
+  border: 1px solid rgba(248,81,73,0.15);
+}
+.chronic-toggle .view-btn { color: rgba(248,81,73,0.5); }
+.chronic-toggle .view-btn.active { background: rgba(248,81,73,0.2); color: #f85149; }
+.chronic-toggle .view-btn:hover:not(.active) { color: rgba(248,81,73,0.7); }
+
+.top-list { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.top-list-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 8px; }
+
+.top-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+}
+.top-item:hover { color: var(--amber); }
+.top-item .addr { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 8px; }
+.top-item .count { font-weight: 700; color: var(--red); flex-shrink: 0; }
+
+#loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(13,17,23,0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  transition: opacity 0.4s;
+}
+#loading-overlay.hidden { opacity: 0; pointer-events: none; }
+
+.loader-ring {
+  width: 48px;
+  height: 48px;
+  border: 3px solid var(--border);
+  border-top-color: var(--amber);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  4% { opacity: 0.2; }
+  6% { opacity: 1; }
+  8% { opacity: 0.4; }
+  9% { opacity: 1; }
+  40% { opacity: 1; }
+  42% { opacity: 0.1; }
+  43% { opacity: 0.8; }
+  44% { opacity: 0.2; }
+  46% { opacity: 1; }
+  82% { opacity: 1; }
+  83% { opacity: 0.3; }
+  84% { opacity: 1; }
+}
+.flicker {
+  animation: flicker 4s infinite;
+  color: var(--amber);
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.chronic-ring {
+  border-radius: 50%;
+  border: 2px solid #f85149;
+  position: absolute;
+  animation: pulse-ring var(--pulse-speed, 2s) ease-out infinite;
+}
+.chronic-label {
+  position: absolute;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-align: center;
+  line-height: 1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  pointer-events: none;
+}
+
+#loading-overlay .loading-text { margin-top: 16px; font-size: 13px; color: var(--text-secondary); }
+#loading-overlay .loading-count { margin-top: 6px; font-size: 20px; font-weight: 700; color: var(--amber); }
+
+@media (max-width: 600px) {
+  #panel {
+    top: auto; bottom: 0; left: 0; right: 0; width: 100%;
+    border-radius: 16px 16px 0 0; max-height: 45vh; padding: 16px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="password-gate" style="position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:32px;width:320px;text-align:center;">
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:8px;">311 streetlight outage map</h2>
+    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:20px;">Enter password to view</p>
+    <input type="password" id="pw-input" placeholder="Password" style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:14px;margin-bottom:12px;outline:none;" autofocus>
+    <button id="pw-btn" style="width:100%;padding:10px;background:var(--amber);color:#000;border:none;border-radius:6px;font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;">Enter</button>
+    <div id="pw-error" style="margin-top:10px;font-size:12px;color:var(--red);display:none;">Incorrect password</div>
+  </div>
+</div>
+
+<div id="loading-overlay">
+  <div class="loader-ring"></div>
+  <div class="loading-text">Loading 311 streetlight complaints...</div>
+  <div class="loading-count" id="load-count">0</div>
+</div>
+
+<div id="map"></div>
+
+<div id="panel">
+  <div style="font-size:10px;letter-spacing:4px;text-transform:uppercase;color:var(--vc-chartreuse);font-weight:700;margin-bottom:8px;">RUBBER MEETS ROAD <span style="opacity:0.5;margin:0 6px;font-weight:400">/</span> <span style="color:rgba(255,255,255,0.85);font-weight:400;letter-spacing:3px;">LIGHTING: 311 STREET LIGHT COMPLAINTS</span></div>
+  <h1>311 streetlight <span class="flicker">outage</span> map</h1>
+  <p class="subtitle">Streetlight outage complaints since Jan. 2024. Hex grid shows complaint density by area; switch to "all spots" to see repeat locations.</p>
+
+  <div id="address-search" style="margin-bottom:14px;position:relative;">
+    <input type="text" id="search-input" placeholder="Search an address..." style="width:100%;padding:9px 36px 9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;outline:none;" />
+    <button id="search-btn" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:6px;font-size:14px;" title="Search">&#x1F50D;</button>
+    <div id="search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:0 0 6px 6px;max-height:200px;overflow-y:auto;z-index:100;"></div>
+    <div id="search-status" style="display:none;font-size:11px;color:var(--text-dim);margin-top:4px;"></div>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="label">Total complaints</div>
+      <div class="value amber" id="stat-total">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Repeat locations</div>
+      <div class="value red" id="stat-repeat">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Still open</div>
+      <div class="value orange" id="stat-open">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Worst spot</div>
+      <div class="value" id="stat-worst" style="font-size:13px;line-height:1.3;">--</div>
+    </div>
+  </div>
+
+  <div class="note" style="font-size:11px;color:var(--text-dim);background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:12px;line-height:1.5;">
+    Note: Parks, bridges, expressways, and other non-street locations are excluded.
+  </div>
+
+  <div class="legend">
+    <div class="legend-title">Complaints per hex cell</div>
+    <div class="legend-gradient"></div>
+    <div class="legend-labels">
+      <span>1</span>
+      <span>20</span>
+      <span>40</span>
+      <span>90</span>
+      <span>120+</span>
+    </div>
+  </div>
+
+  <div class="filter-section">
+    <label for="borough-filter">Borough</label>
+    <select id="borough-filter">
+      <option value="all">All boroughs</option>
+      <option value="BRONX">Bronx</option>
+      <option value="BROOKLYN">Brooklyn</option>
+      <option value="MANHATTAN">Manhattan</option>
+      <option value="QUEENS">Queens</option>
+      <option value="STATEN ISLAND">Staten Island</option>
+    </select>
+
+    <label>View</label>
+    <div class="view-toggle">
+      <button class="view-btn active" data-view="hex">Hex grid</button>
+      <button class="view-btn" data-view="points">All spots</button>
+    </div>
+  </div>
+
+  <div class="filter-section" style="margin-top:4px;">
+    <label>Chronic dark spots</label>
+    <div class="view-toggle chronic-toggle">
+      <button class="view-btn" data-view="chronic10">10+ complaints</button>
+      <button class="view-btn" data-view="chronic20">20+ complaints</button>
+    </div>
+  </div>
+
+  <div class="filter-section" style="margin-top:4px;">
+    <label>Rank by</label>
+    <div class="view-toggle">
+      <button class="rank-btn active" data-rank="address">Address</button>
+      <button class="rank-btn" data-rank="tract">Census tract</button>
+      <button class="rank-btn" data-rank="density">Per sq mi</button>
+    </div>
+  </div>
+
+  <div class="top-list">
+    <div class="top-list-title" id="top-list-title">Worst repeat locations</div>
+    <div id="top-items"></div>
+  </div>
+
+  <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px;">
+    <details style="font-size:11px;color:var(--text-dim);line-height:1.6;">
+      <summary style="cursor:pointer;color:var(--text-secondary);font-size:11px;margin-bottom:8px;">Methodology and definitions</summary>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Source:</strong> NYC 311 complaints filed as "Street Light Condition" via the NYC Open Data API, starting Jan. 1, 2024.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Included complaint types:</strong> Street Light Out, Multiple Street Lights Out, Street Light Lamp Dim, Street Light Lamp Missing, Fixture/Luminaire Out of Position, Fixture/Luminaire Damaged, Fixture/Luminaire Missing and Flood Light Lamp Out.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Not included:</strong> Traffic signals, pedestrian signals or any non-streetlight complaints. These have separate 311 categories.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Excluded locations:</strong> Parks, playgrounds, bridges, expressways, parkways, highways, cemeteries, greenways and other non-street infrastructure are filtered out by address pattern matching.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Repeat locations:</strong> Complaints are grouped to roughly 50-meter blocks. A "repeat location" has two or more complaints at the same spot.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Chronic dark spots:</strong> Locations with 10 or more (or 20 or more) total outage complaints since Jan. 2024, depending on the view selected.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Per square mile:</strong> Total complaints divided by the census tract's geographic area in square miles, using 2020 census tract boundary data from NYC Open Data.</p>
+      <p style="margin-bottom:8px;"><strong style="color:var(--text-secondary);">Neighborhoods:</strong> Derived from NYC community board boundaries mapped to common neighborhood names.</p>
+      <p style="margin-top:12px;"><a href="methodology.md" target="_blank" style="color:var(--accent);text-decoration:underline;">Full methodology document</a> — data sources, calculations, filters and limitations.</p>
+    </details>
+  </div>
+</div>
+
+<script>
+// Password gate
+(function() {
+  const gate = document.getElementById('password-gate');
+  const input = document.getElementById('pw-input');
+  const btn = document.getElementById('pw-btn');
+  const err = document.getElementById('pw-error');
+
+  if (sessionStorage.getItem('311-auth') === '1') {
+    gate.style.display = 'none';
+  }
+
+  function checkPassword() {
+    if (input.value === 'vitalcity2026!') {
+      sessionStorage.setItem('311-auth', '1');
+      gate.style.display = 'none';
+    } else {
+      err.style.display = 'block';
+      input.value = '';
+      input.focus();
+    }
+  }
+
+  btn.addEventListener('click', checkPassword);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPassword(); });
+})();
+
+const API_BASE = 'https://data.cityofnewyork.us/resource/erm2-nwe9.json';
+const DATE_STR = '2024-01-01T00:00:00';
+
+let allComplaints = [];
+let map, hexLayer, pointLayer;
+let currentView = 'hex';
+
+const CB_NEIGHBORHOODS = {
+  "MANHATTAN-01": "Financial District/Tribeca", "MANHATTAN-02": "Greenwich Village/SoHo",
+  "MANHATTAN-03": "Lower East Side/Chinatown", "MANHATTAN-04": "Chelsea/Hell's Kitchen",
+  "MANHATTAN-05": "Midtown", "MANHATTAN-06": "Murray Hill/Gramercy",
+  "MANHATTAN-07": "Upper West Side", "MANHATTAN-08": "Upper East Side",
+  "MANHATTAN-09": "Morningside Heights/Hamilton Heights", "MANHATTAN-10": "Central Harlem",
+  "MANHATTAN-11": "East Harlem", "MANHATTAN-12": "Washington Heights/Inwood",
+  "BRONX-01": "Mott Haven/Melrose", "BRONX-02": "Hunts Point/Longwood",
+  "BRONX-03": "Morrisania/Crotona Park East", "BRONX-04": "Highbridge/Concourse",
+  "BRONX-05": "Fordham/University Heights", "BRONX-06": "Belmont/East Tremont",
+  "BRONX-07": "Norwood/Bedford Park", "BRONX-08": "Riverdale/Kingsbridge",
+  "BRONX-09": "Parkchester/Soundview", "BRONX-10": "Throgs Neck/Co-op City",
+  "BRONX-11": "Morris Park/Pelham Parkway", "BRONX-12": "Wakefield/Williamsbridge",
+  "BROOKLYN-01": "Williamsburg/Greenpoint", "BROOKLYN-02": "Brooklyn Heights/Fort Greene",
+  "BROOKLYN-03": "Bedford-Stuyvesant", "BROOKLYN-04": "Bushwick",
+  "BROOKLYN-05": "East New York/Cypress Hills", "BROOKLYN-06": "Park Slope/Carroll Gardens",
+  "BROOKLYN-07": "Sunset Park", "BROOKLYN-08": "Crown Heights North/Prospect Heights",
+  "BROOKLYN-09": "Crown Heights South/Prospect Lefferts Gardens", "BROOKLYN-10": "Bay Ridge/Dyker Heights",
+  "BROOKLYN-11": "Bensonhurst/Bath Beach", "BROOKLYN-12": "Borough Park/Kensington",
+  "BROOKLYN-13": "Coney Island/Brighton Beach", "BROOKLYN-14": "Flatbush/Midwood",
+  "BROOKLYN-15": "Sheepshead Bay/Manhattan Beach", "BROOKLYN-16": "Brownsville/Ocean Hill",
+  "BROOKLYN-17": "East Flatbush", "BROOKLYN-18": "Canarsie/Flatlands",
+  "QUEENS-01": "Astoria/Long Island City", "QUEENS-02": "Woodside/Sunnyside",
+  "QUEENS-03": "Jackson Heights/East Elmhurst", "QUEENS-04": "Elmhurst/Corona",
+  "QUEENS-05": "Ridgewood/Maspeth", "QUEENS-06": "Forest Hills/Rego Park",
+  "QUEENS-07": "Flushing/Whitestone", "QUEENS-08": "Fresh Meadows/Jamaica Estates",
+  "QUEENS-09": "Woodhaven/Richmond Hill", "QUEENS-10": "Howard Beach/South Ozone Park",
+  "QUEENS-11": "Bayside/Little Neck", "QUEENS-12": "Jamaica/St. Albans",
+  "QUEENS-13": "Queens Village/Laurelton", "QUEENS-14": "Far Rockaway/Broad Channel",
+  "STATEN ISLAND-01": "St. George/Stapleton", "STATEN ISLAND-02": "New Dorp/Dongan Hills",
+  "STATEN ISLAND-03": "Tottenville/Great Kills"
+};
+
+function getNeighborhood(communityBoard) {
+  if (!communityBoard) return '';
+  // Format is like "05 BROOKLYN" -> "BROOKLYN-05"
+  const match = communityBoard.match(/^(\d+)\s+(.+)$/);
+  if (!match) return '';
+  const num = match[1].padStart(2, '0');
+  const boro = match[2].trim();
+  return CB_NEIGHBORHOODS[`${boro}-${num}`] || '';
+}
+
+const DARK_DESCRIPTORS = new Set([
+  'Street Light Out', 'Multiple Street Lights Out', 'Street Light Lamp Dim',
+  'Street Light Lamp Missing', 'Fixture/Luminaire Out Of Position',
+  'Fixture/Luminaire Damaged', 'Fixture/Luminaire Missing', 'Flood Light Lamp Out'
+]);
+
+const EXCLUDE_PATTERNS = [
+  /\bpark\b/i, /\bplayground\b/i, /\brecreation\b/i,
+  /\bmeadows?\b/i, /\bgreenbelt\b/i, /\bbotanical\b/i,
+  /\bbridge\b/i, /\bgreenway\b/i, /\besplanade\b/i,
+  /\bpier\b/i, /\bboardwalk\b/i, /\bbeach\b/i,
+  /\briver\b/i, /\bpromenade\b/i, /\bcemetery\b/i,
+  /\bpkwy\b/i, /\bparkway\b/i, /\bexpwy\b/i, /\bexpressway\b/i, /\bexpy\b/i,
+  /\bhighway\b/i, /\bhwy\b/i, /\bturnpike\b/i, /\btpke\b/i, /\bstadium\b/i,
+  /\bisland\b/i, /\bfield\b/i, /\bgarden\b/i, /\bplaza\b/i,
+  /\bfdr\b/i, /\bdeegan\b/i, /\bbruckner\b/i, /\bbqe\b/i,
+  /\binterchange\b/i, /\boverpass\b/i, /\bramp\b/i
+];
+
+function filterComplaints(raw) {
+  return raw.filter(c => {
+    if (!DARK_DESCRIPTORS.has(c.descriptor)) return false;
+    const addr = c.incident_address || '';
+    if (EXCLUDE_PATTERNS.some(p => p.test(addr))) return false;
+    return true;
+  });
+}
+
+const CACHE_KEY = '311-streetlight-data';
+const CACHE_VERSION = '2024-v3';
+
+function loadCache() {
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached);
+    if (parsed.version !== CACHE_VERSION) return null;
+    // Cache is valid for 6 hours
+    if (Date.now() - parsed.timestamp > 6 * 60 * 60 * 1000) return null;
+    return parsed.data;
+  } catch { return null; }
+}
+
+function saveCache(data) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      version: CACHE_VERSION,
+      timestamp: Date.now(),
+      data: data
+    }));
+  } catch { /* localStorage full or unavailable */ }
+}
+
+// Progressive fetch with callback after each batch
+async function fetchAll(onBatch) {
+  const limit = 5000;
+  let offset = 0;
+  let retries = 0;
+  const raw = [];
+
+  const where = `complaint_type='Street Light Condition' AND created_date>'${DATE_STR}' AND latitude IS NOT NULL`;
+
+  while (true) {
+    const url = `${API_BASE}?$where=${encodeURIComponent(where)}&$select=descriptor,created_date,latitude,longitude,incident_address,borough,community_board,status&$limit=${limit}&$offset=${offset}&$order=created_date DESC`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.length) break;
+
+      raw.push(...data);
+      const filtered = filterComplaints(data);
+      if (filtered.length > 0) {
+        allComplaints.push(...filtered);
+        document.getElementById('load-count').textContent = allComplaints.length.toLocaleString();
+        if (onBatch) onBatch();
+      }
+
+      offset += limit;
+      retries = 0;
+      if (data.length < limit) break;
+      await new Promise(r => setTimeout(r, 150));
+    } catch (err) {
+      retries++;
+      if (retries > 3) break;
+      await new Promise(r => setTimeout(r, 1000 * retries));
+    }
+  }
+
+  // Save full raw data to cache for fast reload
+  saveCache(raw);
+}
+
+function getHexColor(count) {
+  // Distribution: p10=7, p25=20, p50=42, p75=68, p90=94, max=189
+  if (count >= 120) return { fill: 'rgba(220,10,10,0.95)', stroke: 'rgba(255,40,40,0.85)' };
+  if (count >= 90) return { fill: 'rgba(200,20,20,0.85)', stroke: 'rgba(240,40,40,0.7)' };
+  if (count >= 65) return { fill: 'rgba(190,40,35,0.7)', stroke: 'rgba(220,55,50,0.55)' };
+  if (count >= 40) return { fill: 'rgba(180,70,30,0.5)', stroke: 'rgba(200,80,40,0.4)' };
+  if (count >= 20) return { fill: 'rgba(160,100,30,0.35)', stroke: 'rgba(180,110,40,0.25)' };
+  if (count >= 8) return { fill: 'rgba(130,115,50,0.2)', stroke: 'rgba(150,130,60,0.15)' };
+  return { fill: 'rgba(80,80,50,0.08)', stroke: 'rgba(100,100,60,0.05)' };
+}
+
+function getPointColor(count) {
+  if (count >= 10) return '#da3633';
+  if (count >= 4) return '#f85149';
+  if (count >= 2) return '#db6d28';
+  return '#f0b429';
+}
+
+function getPointRadius(count) {
+  if (count >= 10) return 8;
+  if (count >= 4) return 6;
+  if (count >= 2) return 4;
+  return 2.5;
+}
+
+function titleCase(str) {
+  if (!str) return '';
+  return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function buildHexLayer(complaints) {
+  const hexCounts = new Map();
+
+  for (const c of complaints) {
+    const lat = parseFloat(c.latitude);
+    const lng = parseFloat(c.longitude);
+    if (isNaN(lat) || isNaN(lng)) continue;
+
+    const hexId = h3.latLngToCell(lat, lng, 8);
+    if (!hexCounts.has(hexId)) {
+      hexCounts.set(hexId, { count: 0, openCount: 0, boroughs: new Map(), addresses: new Map(), cbs: new Map() });
+    }
+    const h = hexCounts.get(hexId);
+    h.count++;
+    if (c.status === 'Open') h.openCount++;
+    if (c.borough) h.boroughs.set(c.borough, (h.boroughs.get(c.borough) || 0) + 1);
+    if (c.incident_address) h.addresses.set(c.incident_address, (h.addresses.get(c.incident_address) || 0) + 1);
+    if (c.community_board) h.cbs.set(c.community_board, (h.cbs.get(c.community_board) || 0) + 1);
+  }
+
+  const layer = L.layerGroup();
+
+  for (const [hexId, data] of hexCounts) {
+    const boundary = h3.cellToBoundary(hexId);
+    const latlngs = boundary.map(([lat, lng]) => [lat, lng]);
+
+    const colors = getHexColor(data.count);
+
+    let topBorough = '';
+    let topBoroughCount = 0;
+    for (const [b, cnt] of data.boroughs) {
+      if (cnt > topBoroughCount) { topBorough = b; topBoroughCount = cnt; }
+    }
+
+    let topCb = '';
+    let topCbCount = 0;
+    for (const [cb, cnt] of data.cbs) {
+      if (cnt > topCbCount) { topCb = cb; topCbCount = cnt; }
+    }
+    const hexNeighborhood = getNeighborhood(topCb);
+
+    const topAddrs = [...data.addresses.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([addr, cnt]) => `<div>${titleCase(addr)} (${cnt})</div>`)
+      .join('');
+
+    const openBadge = data.openCount > 0
+      ? `<span style="color:#db6d28;font-weight:600;">${data.openCount} still open</span>`
+      : '<span style="color:#57aa4a;">All resolved</span>';
+
+    const polygon = L.polygon(latlngs, {
+      fillColor: colors.fill,
+      fillOpacity: 1,
+      color: colors.stroke,
+      weight: 1,
+      opacity: 1
+    });
+
+    polygon.bindPopup(`
+      <div style="min-width:180px;">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">
+          <span style="font-size:26px;font-weight:700;color:${data.count >= 15 ? '#da3633' : data.count >= 5 ? '#f85149' : '#db6d28'};">${data.count}</span>
+          <span style="font-size:12px;color:#8b949e;">complaints</span>
+        </div>
+        <div style="font-size:11px;color:#6e7681;margin-bottom:6px;">${hexNeighborhood ? hexNeighborhood + ', ' : ''}${titleCase(topBorough)}</div>
+        <div style="margin-bottom:8px;">${openBadge}</div>
+        ${topAddrs ? `<div style="font-size:11px;color:#8b949e;border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;"><div style="font-size:10px;color:#6e7681;text-transform:uppercase;margin-bottom:4px;">Top addresses</div>${topAddrs}</div>` : ''}
+      </div>
+    `, { className: 'dark-popup' });
+
+    layer.addLayer(polygon);
+  }
+
+  return layer;
+}
+
+function buildPointLayer(complaints) {
+  const clusters = new Map();
+
+  for (const c of complaints) {
+    const lat = parseFloat(c.latitude);
+    const lng = parseFloat(c.longitude);
+    if (isNaN(lat) || isNaN(lng)) continue;
+
+    const key = `${(Math.round(lat * 2000) / 2000).toFixed(4)},${(Math.round(lng * 2000) / 2000).toFixed(4)}`;
+    if (!clusters.has(key)) {
+      clusters.set(key, { lat: 0, lng: 0, count: 0, openCount: 0, addresses: new Map(), boroughs: new Map(), descriptors: new Map(), cbs: new Map() });
+    }
+    const cl = clusters.get(key);
+    cl.lat += lat; cl.lng += lng; cl.count++;
+    if (c.status === 'Open') cl.openCount++;
+    if (c.incident_address) cl.addresses.set(c.incident_address, (cl.addresses.get(c.incident_address) || 0) + 1);
+    if (c.borough) cl.boroughs.set(c.borough, (cl.boroughs.get(c.borough) || 0) + 1);
+    cl.descriptors.set(c.descriptor, (cl.descriptors.get(c.descriptor) || 0) + 1);
+    if (c.community_board) cl.cbs.set(c.community_board, (cl.cbs.get(c.community_board) || 0) + 1);
+  }
+
+  const layer = L.layerGroup();
+
+  for (const [, cl] of clusters) {
+    const avgLat = cl.lat / cl.count;
+    const avgLng = cl.lng / cl.count;
+
+    let topAddr = 'Unknown location';
+    let topAddrCount = 0;
+    for (const [addr, cnt] of cl.addresses) { if (cnt > topAddrCount) { topAddr = addr; topAddrCount = cnt; } }
+
+    let topBorough = '';
+    let topBoroughCount = 0;
+    for (const [b, cnt] of cl.boroughs) { if (cnt > topBoroughCount) { topBorough = b; topBoroughCount = cnt; } }
+
+    let topCb = '';
+    let topCbCount = 0;
+    for (const [cb, cnt] of cl.cbs) { if (cnt > topCbCount) { topCb = cb; topCbCount = cnt; } }
+    const neighborhood = getNeighborhood(topCb);
+
+    const descriptorStr = [...cl.descriptors.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} (${n})`).join(', ');
+
+    const openBadge = cl.openCount > 0
+      ? `<span style="color:#db6d28;font-weight:600;">${cl.openCount} still open</span>`
+      : '<span style="color:#57aa4a;">All resolved</span>';
+
+    const marker = L.circleMarker([avgLat, avgLng], {
+      radius: getPointRadius(cl.count),
+      fillColor: getPointColor(cl.count),
+      fillOpacity: 0.8,
+      color: 'rgba(255,255,255,0.15)',
+      weight: cl.count >= 3 ? 1.5 : 0.5
+    });
+
+    marker.bindPopup(`
+      <div style="min-width:180px;">
+        <div style="margin-bottom:8px;">
+          <strong style="font-size:14px;">${titleCase(topAddr)}</strong><br>
+          <span style="color:#8b949e;font-size:11px;">${neighborhood ? neighborhood + ', ' : ''}${titleCase(topBorough)}</span>
+        </div>
+        <div style="display:flex;gap:16px;margin-bottom:8px;">
+          <div>
+            <div style="font-size:10px;color:#6e7681;text-transform:uppercase;">Complaints</div>
+            <div style="font-size:22px;font-weight:700;color:${getPointColor(cl.count)};">${cl.count}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#6e7681;text-transform:uppercase;">Status</div>
+            <div style="font-size:13px;margin-top:4px;">${openBadge}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:#6e7681;">${descriptorStr}</div>
+      </div>
+    `);
+
+    layer.addLayer(marker);
+  }
+
+  return layer;
+}
+
+let currentRank = 'address';
+let lastFilteredComplaints = [];
+let censusTractData = null;
+
+async function loadCensusTracts() {
+  try {
+    // Load pre-simplified census tract boundaries from static file
+    const res = await fetch('census-tracts.json');
+    const geojson = await res.json();
+    // Pre-compute bounding boxes for fast spatial indexing
+    censusTractData = geojson.features.filter(f => f.properties.ctlabel && f.geometry).map(f => {
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      const coords = f.geometry.coordinates;
+      // GeoJSON is [lng, lat]; handle MultiPolygon wrapping
+      const polys = f.geometry.type === 'MultiPolygon' ? coords : [coords];
+      for (const polygon of polys) {
+        for (const ring of polygon) {
+          for (const [lng, lat] of ring) {
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lng < minLng) minLng = lng;
+            if (lng > maxLng) maxLng = lng;
+          }
+        }
+      }
+      // Normalize coordinates to Socrata-style format for pointInPolygon
+      // Socrata stores as [lng, lat], same as GeoJSON
+      const normalizedCoords = f.geometry.type === 'MultiPolygon' ? coords : [coords];
+      return {
+        the_geom: { coordinates: normalizedCoords },
+        ctlabel: f.properties.ctlabel,
+        boroname: f.properties.boroname,
+        ntaname: f.properties.ntaname,
+        shape_area: f.properties.shape_area,
+        bbox: { minLat, maxLat, minLng, maxLng }
+      };
+    });
+    console.log(`Loaded ${censusTractData.length} census tracts`);
+  } catch (err) {
+    console.warn('Failed to load census tract boundaries:', err);
+  }
+}
+
+function pointInPolygon(lat, lng, coordinates) {
+  // Ray-casting for MultiPolygon
+  for (const polygon of coordinates) {
+    for (const ring of polygon) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][1], yi = ring[i][0]; // lat, lng
+        const xj = ring[j][1], yj = ring[j][0];
+        if (((yi > lng) !== (yj > lng)) && (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      if (inside) return true;
+    }
+  }
+  return false;
+}
+
+function assignCensusTracts(complaints) {
+  if (!censusTractData) return;
+  for (let i = 0; i < complaints.length; i++) {
+    const lat = parseFloat(complaints[i].latitude);
+    const lng = parseFloat(complaints[i].longitude);
+    if (isNaN(lat) || isNaN(lng)) continue;
+    // Use bounding box to narrow candidates
+    for (const tract of censusTractData) {
+      const bb = tract.bbox;
+      if (lat < bb.minLat || lat > bb.maxLat || lng < bb.minLng || lng > bb.maxLng) continue;
+      if (pointInPolygon(lat, lng, tract.the_geom.coordinates)) {
+        complaints[i]._tract = tract.ctlabel;
+        complaints[i]._tractBoro = tract.boroname;
+        complaints[i]._tractNta = tract.ntaname;
+        complaints[i]._tractArea = parseFloat(tract.shape_area) || 0;
+        break;
+      }
+    }
+  }
+}
+
+function updateStats(complaints) {
+  lastFilteredComplaints = complaints;
+  document.getElementById('stat-total').textContent = complaints.length.toLocaleString();
+  document.getElementById('stat-open').textContent = complaints.filter(c => c.status === 'Open').length.toLocaleString();
+
+  const locCounts = new Map();
+  for (const c of complaints) {
+    const lat = parseFloat(c.latitude);
+    const lng = parseFloat(c.longitude);
+    if (isNaN(lat) || isNaN(lng)) continue;
+    const key = `${(Math.round(lat * 2000) / 2000).toFixed(4)},${(Math.round(lng * 2000) / 2000).toFixed(4)}`;
+    locCounts.set(key, (locCounts.get(key) || 0) + 1);
+  }
+  document.getElementById('stat-repeat').textContent = [...locCounts.values()].filter(c => c >= 2).length.toLocaleString();
+
+  const addrCounts = new Map();
+  for (const c of complaints) {
+    if (c.incident_address) {
+      const hood = getNeighborhood(c.community_board);
+      const key = c.incident_address + '|' + (c.borough || '') + '|' + hood;
+      addrCounts.set(key, (addrCounts.get(key) || 0) + 1);
+    }
+  }
+  const sorted = [...addrCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (sorted.length) {
+    const [key, cnt] = sorted[0];
+    const [addr, , hood] = key.split('|');
+    document.getElementById('stat-worst').textContent = `${titleCase(addr)}${hood ? ', ' + hood : ''} (${cnt} complaints)`;
+  }
+
+  renderTopList(complaints, sorted);
+}
+
+function renderTopList(complaints, addrSorted) {
+  const topItems = document.getElementById('top-items');
+  topItems.innerHTML = '';
+
+  if (currentRank === 'tract' || currentRank === 'density') {
+    const isDensity = currentRank === 'density';
+    document.getElementById('top-list-title').textContent = isDensity
+      ? 'Outages per square mile (by census tract)'
+      : 'Complaints by census tract';
+
+    if (!censusTractData) {
+      topItems.innerHTML = '<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">Loading census tract data...</div>';
+      return;
+    }
+
+    const SQ_FT_PER_SQ_MI = 27878400;
+
+    const tractCounts = new Map();
+    for (let i = 0; i < complaints.length; i++) {
+      const tract = complaints[i]._tract;
+      if (!tract) continue;
+      const boro = complaints[i]._tractBoro || complaints[i].borough || '';
+      const nta = complaints[i]._tractNta || '';
+      const area = complaints[i]._tractArea || 0;
+      const key = tract + '|' + boro + '|' + nta + '|' + area;
+      if (!tractCounts.has(key)) {
+        tractCounts.set(key, { count: 0, openCount: 0, lat: 0, lng: 0 });
+      }
+      const t = tractCounts.get(key);
+      t.count++;
+      if (complaints[i].status === 'Open') t.openCount++;
+      t.lat += parseFloat(complaints[i].latitude) || 0;
+      t.lng += parseFloat(complaints[i].longitude) || 0;
+    }
+
+    let sorted;
+    if (isDensity) {
+      sorted = [...tractCounts.entries()]
+        .map(([key, data]) => {
+          const area = parseFloat(key.split('|')[3]) / SQ_FT_PER_SQ_MI || 0.01;
+          return [key, data, data.count / area];
+        })
+        .filter(([, data]) => data.count >= 3) // filter noise from tiny tracts
+        .sort((a, b) => b[2] - a[2]);
+    } else {
+      sorted = [...tractCounts.entries()].map(([key, data]) => {
+        const area = parseFloat(key.split('|')[3]) / SQ_FT_PER_SQ_MI || 0.01;
+        return [key, data, data.count / area];
+      }).sort((a, b) => b[1].count - a[1].count);
+    }
+
+    sorted.slice(0, 20).forEach(([key, data, perSqMi]) => {
+      const [tract, boro, nta] = key.split('|');
+      const div = document.createElement('div');
+      div.className = 'top-item';
+      const location = nta || titleCase(boro);
+      const openTag = data.openCount > 0 ? ` <span style="color:#db6d28;font-size:10px;">(${data.openCount} open)</span>` : '';
+      if (isDensity) {
+        div.innerHTML = `<span class="addr">Tract ${tract}, ${location}${openTag}</span><span class="count">${Math.round(perSqMi)}/mi²</span>`;
+      } else {
+        div.innerHTML = `<span class="addr">Tract ${tract}, ${location}${openTag}</span><span class="count">${data.count}</span>`;
+      }
+      div.addEventListener('click', () => {
+        map.flyTo([data.lat / data.count, data.lng / data.count], 15);
+      });
+      topItems.appendChild(div);
+    });
+  } else {
+    document.getElementById('top-list-title').textContent = 'Worst repeat locations';
+
+    if (!addrSorted) {
+      addrSorted = [];
+      const addrCounts = new Map();
+      for (const c of complaints) {
+        if (c.incident_address) {
+          const hood = getNeighborhood(c.community_board);
+          const key = c.incident_address + '|' + (c.borough || '') + '|' + hood;
+          addrCounts.set(key, (addrCounts.get(key) || 0) + 1);
+        }
+      }
+      addrSorted = [...addrCounts.entries()].sort((a, b) => b[1] - a[1]);
+    }
+
+    addrSorted.slice(0, 15).forEach(([key, cnt]) => {
+      if (cnt < 2) return;
+      const [addr, boro, hood] = key.split('|');
+      const location = hood || titleCase(boro);
+      const div = document.createElement('div');
+      div.className = 'top-item';
+      div.innerHTML = `<span class="addr">${titleCase(addr)}, ${location}</span><span class="count">${cnt}</span>`;
+      div.addEventListener('click', () => {
+        const match = complaints.find(c => c.incident_address === addr);
+        if (match) map.flyTo([parseFloat(match.latitude), parseFloat(match.longitude)], 16);
+      });
+      topItems.appendChild(div);
+    });
+  }
+}
+
+let chronicLayer10 = null;
+let chronicLayer20 = null;
+
+function buildChronicLayer(complaints, minCount = 20) {
+  // Find locations with complaints in BOTH 2024 and 2025
+  const locData = new Map();
+
+  for (const c of complaints) {
+    const lat = parseFloat(c.latitude);
+    const lng = parseFloat(c.longitude);
+    if (isNaN(lat) || isNaN(lng)) continue;
+
+    const key = `${(Math.round(lat * 2000) / 2000).toFixed(4)},${(Math.round(lng * 2000) / 2000).toFixed(4)}`;
+    if (!locData.has(key)) {
+      locData.set(key, { lat: 0, lng: 0, count: 0, openCount: 0, years: new Set(), addresses: new Map(), boroughs: new Map(), descriptors: new Map(), cbs: new Map() });
+    }
+    const loc = locData.get(key);
+    loc.lat += lat; loc.lng += lng; loc.count++;
+    if (c.status === 'Open') loc.openCount++;
+
+    const year = new Date(c.created_date).getFullYear();
+    loc.years.add(year);
+
+    if (c.incident_address) loc.addresses.set(c.incident_address, (loc.addresses.get(c.incident_address) || 0) + 1);
+    if (c.borough) loc.boroughs.set(c.borough, (loc.boroughs.get(c.borough) || 0) + 1);
+    loc.descriptors.set(c.descriptor, (loc.descriptors.get(c.descriptor) || 0) + 1);
+    if (c.community_board) loc.cbs.set(c.community_board, (loc.cbs.get(c.community_board) || 0) + 1);
+  }
+
+  const layer = L.layerGroup();
+
+  // Only keep locations with complaints in both years AND 4+ total
+  const chronic = [...locData.entries()]
+    .filter(([, d]) => d.count >= minCount)
+    .sort((a, b) => b[1].count - a[1].count);
+
+  for (const [, loc] of chronic) {
+    const avgLat = loc.lat / loc.count;
+    const avgLng = loc.lng / loc.count;
+
+    let topAddr = 'Unknown';
+    let topAddrCount = 0;
+    for (const [addr, cnt] of loc.addresses) { if (cnt > topAddrCount) { topAddr = addr; topAddrCount = cnt; } }
+
+    let topBorough = '';
+    let topBoroughCount = 0;
+    for (const [b, cnt] of loc.boroughs) { if (cnt > topBoroughCount) { topBorough = b; topBoroughCount = cnt; } }
+
+    let topCb = '';
+    let topCbCount = 0;
+    for (const [cb, cnt] of loc.cbs) { if (cnt > topCbCount) { topCb = cb; topCbCount = cnt; } }
+    const neighborhood = getNeighborhood(topCb);
+
+    const radius = Math.min(3 + loc.count * 0.3, 10);
+    // Faster pulse = more complaints. Range: 2.5s (4 complaints) down to 0.6s (30+)
+    const pulseSpeed = Math.max(0.6, 2.5 - (loc.count - 4) * 0.08);
+    const ringSize = radius * 2 + 4;
+    const fillColor = loc.count >= 15 ? '#da3633' : loc.count >= 8 ? '#f85149' : '#db6d28';
+
+    // Pulsing ring + count label
+    const iconSize = ringSize + 20;
+    const center = iconSize / 2;
+    const pulseIcon = L.divIcon({
+      className: '',
+      html: `<div style="width:${iconSize}px;height:${iconSize}px;position:relative;">
+        <div class="chronic-ring" style="width:${ringSize}px;height:${ringSize}px;left:${center - ringSize/2}px;top:${center - ringSize/2}px;--pulse-speed:${pulseSpeed}s;border-color:${fillColor};"></div>
+        <div class="chronic-ring" style="width:${ringSize}px;height:${ringSize}px;left:${center - ringSize/2}px;top:${center - ringSize/2}px;--pulse-speed:${pulseSpeed}s;border-color:${fillColor};animation-delay:${pulseSpeed/2}s;"></div>
+      </div>`,
+      iconSize: [iconSize, iconSize],
+      iconAnchor: [center, center]
+    });
+
+    const pulseMarker = L.marker([avgLat, avgLng], { icon: pulseIcon, interactive: false });
+    layer.addLayer(pulseMarker);
+
+    // Inner solid circle
+    const marker = L.circleMarker([avgLat, avgLng], {
+      radius: radius,
+      fillColor: fillColor,
+      fillOpacity: 0.9,
+      color: '#fff',
+      weight: 2
+    });
+
+    const openBadge = loc.openCount > 0
+      ? `<span style="color:#db6d28;font-weight:600;">${loc.openCount} still open</span>`
+      : '<span style="color:#57aa4a;">All resolved</span>';
+
+    const yearList = [...loc.years].sort().join(', ');
+
+    marker.bindPopup(`
+      <div style="min-width:200px;">
+        <div style="margin-bottom:4px;">
+          <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:#f85149;font-weight:600;">Chronic dark spot</span>
+        </div>
+        <div style="margin-bottom:8px;">
+          <strong style="font-size:14px;">${titleCase(topAddr)}</strong><br>
+          <span style="color:#8b949e;font-size:11px;">${neighborhood ? neighborhood + ', ' : ''}${titleCase(topBorough)}</span>
+        </div>
+        <div style="display:flex;gap:16px;margin-bottom:8px;">
+          <div>
+            <div style="font-size:10px;color:#6e7681;text-transform:uppercase;">Total</div>
+            <div style="font-size:22px;font-weight:700;color:#f85149;">${loc.count}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#6e7681;text-transform:uppercase;">Years</div>
+            <div style="font-size:13px;margin-top:4px;font-weight:600;">${yearList}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#6e7681;text-transform:uppercase;">Status</div>
+            <div style="font-size:13px;margin-top:4px;">${openBadge}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:#6e7681;">${[...loc.descriptors.entries()].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} (${n})`).join(', ')}</div>
+      </div>
+    `);
+
+    layer.addLayer(marker);
+  }
+
+  // Store count for stats
+  layer._chronicCount = chronic.length;
+
+  return layer;
+}
+
+let baseView = 'hex'; // tracks hex vs points independently
+
+function setView(view) {
+  const isChronic = view === 'chronic10' || view === 'chronic20';
+
+  if (isChronic) {
+    if (currentView === view) {
+      // Toggle off: return to base view
+      currentView = baseView;
+    } else {
+      currentView = view;
+    }
+  } else {
+    baseView = view;
+    currentView = view;
+  }
+
+  // Update base view buttons (hex/points)
+  document.querySelectorAll('.view-toggle:not(.chronic-toggle) .view-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === baseView);
+  });
+  // Update chronic buttons
+  document.querySelectorAll('.chronic-toggle .view-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === currentView);
+  });
+
+  if (hexLayer) map.removeLayer(hexLayer);
+  if (pointLayer) map.removeLayer(pointLayer);
+  if (chronicLayer10) map.removeLayer(chronicLayer10);
+  if (chronicLayer20) map.removeLayer(chronicLayer20);
+
+  if (currentView === 'chronic10') {
+    map.addLayer(chronicLayer10);
+  } else if (currentView === 'chronic20') {
+    map.addLayer(chronicLayer20);
+  } else if (currentView === 'hex') {
+    map.addLayer(hexLayer);
+  } else {
+    map.addLayer(pointLayer);
+  }
+}
+
+function applyFilters() {
+  const borough = document.getElementById('borough-filter').value;
+  const filtered = borough === 'all' ? allComplaints : allComplaints.filter(c => c.borough === borough);
+
+  if (hexLayer) map.removeLayer(hexLayer);
+  if (pointLayer) map.removeLayer(pointLayer);
+  if (chronicLayer10) map.removeLayer(chronicLayer10);
+  if (chronicLayer20) map.removeLayer(chronicLayer20);
+
+  hexLayer = buildHexLayer(filtered);
+  pointLayer = buildPointLayer(filtered);
+  chronicLayer10 = buildChronicLayer(filtered, 10);
+  chronicLayer20 = buildChronicLayer(filtered, 20);
+
+  if (currentView === 'hex') map.addLayer(hexLayer);
+  else if (currentView === 'chronic10') map.addLayer(chronicLayer10);
+  else if (currentView === 'chronic20') map.addLayer(chronicLayer20);
+  else map.addLayer(pointLayer);
+
+  updateStats(filtered);
+}
+
+async function init() {
+  // Init map immediately
+  map = L.map('map', {
+    center: [40.73, -73.95],
+    zoom: 11,
+    maxZoom: 18,
+    minZoom: 9,
+    zoomControl: false
+  });
+
+  L.control.zoom({ position: 'topright' }).addTo(map);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://carto.com">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+    subdomains: 'abcd',
+    maxZoom: 19
+  }).addTo(map);
+
+  // Start loading census tracts in background
+  const tractPromise = loadCensusTracts();
+
+  // Check cache first
+  const cached = loadCache();
+  let mapShown = false;
+
+  function rebuildMap() {
+    if (hexLayer) map.removeLayer(hexLayer);
+    if (pointLayer) map.removeLayer(pointLayer);
+    if (chronicLayer10) map.removeLayer(chronicLayer10);
+    if (chronicLayer20) map.removeLayer(chronicLayer20);
+
+    hexLayer = buildHexLayer(allComplaints);
+    pointLayer = buildPointLayer(allComplaints);
+    chronicLayer10 = buildChronicLayer(allComplaints, 10);
+    chronicLayer20 = buildChronicLayer(allComplaints, 20);
+
+    if (currentView === 'hex') map.addLayer(hexLayer);
+    else if (currentView === 'chronic10') map.addLayer(chronicLayer10);
+    else if (currentView === 'chronic20') map.addLayer(chronicLayer20);
+    else map.addLayer(pointLayer);
+
+    updateStats(allComplaints);
+  }
+
+  if (cached) {
+    // Instant load from cache
+    document.querySelector('.loading-text').textContent = 'Loading from cache...';
+    allComplaints = filterComplaints(cached);
+    document.getElementById('load-count').textContent = allComplaints.length.toLocaleString();
+
+    rebuildMap();
+    document.getElementById('loading-overlay').classList.add('hidden');
+    mapShown = true;
+
+    // Refresh from API in background
+    allComplaints = [];
+    fetchAll(() => {}).then(() => {
+      rebuildMap();
+      tractPromise.then(() => assignCensusTracts(allComplaints));
+    });
+  } else {
+    // First visit — show map after first batch arrives
+    document.querySelector('.loading-text').textContent = 'Fetching NYC 311 data...';
+    let firstBatch = true;
+    await fetchAll(() => {
+      if (firstBatch && allComplaints.length > 0) {
+        firstBatch = false;
+        rebuildMap();
+        document.getElementById('loading-overlay').classList.add('hidden');
+        mapShown = true;
+      }
+    });
+
+    // Final rebuild with all data
+    rebuildMap();
+    if (!mapShown) {
+      document.getElementById('loading-overlay').classList.add('hidden');
+    }
+  }
+
+  // Assign census tracts once boundaries are loaded
+  await tractPromise;
+  assignCensusTracts(allComplaints);
+
+  // Listeners
+  document.getElementById('borough-filter').addEventListener('change', applyFilters);
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', () => setView(btn.dataset.view));
+  });
+  document.querySelectorAll('.rank-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentRank = btn.dataset.rank;
+      document.querySelectorAll('.rank-btn').forEach(b => b.classList.toggle('active', b.dataset.rank === currentRank));
+      renderTopList(lastFilteredComplaints);
+    });
+  });
+}
+
+// Address search
+(function() {
+  const input = document.getElementById('search-input');
+  const btn = document.getElementById('search-btn');
+  const resultsDiv = document.getElementById('search-results');
+  const statusDiv = document.getElementById('search-status');
+  let searchMarker = null;
+
+  async function doSearch() {
+    const query = input.value.trim();
+    if (!query) return;
+
+    // Append "New York City" if not already present
+    const fullQuery = /new york|nyc|brooklyn|bronx|queens|manhattan|staten island/i.test(query)
+      ? query
+      : query + ', New York City';
+
+    statusDiv.style.display = 'block';
+    statusDiv.textContent = 'Searching...';
+    resultsDiv.style.display = 'none';
+
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullQuery)}&countrycodes=us&viewbox=-74.3,40.45,-73.65,40.95&bounded=1&limit=5&addressdetails=1`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'StreetlightOutageMap/1.0' } });
+      const results = await res.json();
+
+      if (!results.length) {
+        statusDiv.textContent = 'No results found.';
+        return;
+      }
+
+      if (results.length === 1) {
+        goToResult(results[0]);
+        return;
+      }
+
+      // Show multiple results
+      statusDiv.style.display = 'none';
+      resultsDiv.style.display = 'block';
+      resultsDiv.innerHTML = '';
+      for (const r of results) {
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);';
+        div.textContent = r.display_name.replace(/, United States$/, '').replace(/, New York, NY$/, ', NY');
+        div.addEventListener('mouseenter', () => div.style.background = 'var(--surface-hover)');
+        div.addEventListener('mouseleave', () => div.style.background = 'none');
+        div.addEventListener('click', () => {
+          goToResult(r);
+          resultsDiv.style.display = 'none';
+        });
+        resultsDiv.appendChild(div);
+      }
+    } catch (err) {
+      statusDiv.textContent = 'Search failed. Try again.';
+    }
+  }
+
+  function goToResult(r) {
+    const lat = parseFloat(r.lat);
+    const lng = parseFloat(r.lon);
+
+    if (searchMarker) map.removeLayer(searchMarker);
+
+    searchMarker = L.circleMarker([lat, lng], {
+      radius: 10,
+      fillColor: '#dde44c',
+      fillOpacity: 0.9,
+      color: '#fff',
+      weight: 2
+    }).addTo(map);
+
+    const label = r.display_name.replace(/, United States$/, '').replace(/, New York, NY$/, ', NY');
+    searchMarker.bindPopup(`<div style="font-size:13px;"><strong>${label}</strong><br><span style="color:var(--text-dim);font-size:11px;">Search result</span></div>`).openPopup();
+
+    map.flyTo([lat, lng], 16, { duration: 1 });
+
+    statusDiv.style.display = 'block';
+    statusDiv.innerHTML = `<span style="color:var(--vc-chartreuse);">Showing results near this location.</span> <a href="#" id="clear-search" style="color:var(--text-secondary);text-decoration:underline;">Clear</a>`;
+    document.getElementById('clear-search').addEventListener('click', (e) => {
+      e.preventDefault();
+      if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
+      input.value = '';
+      statusDiv.style.display = 'none';
+      resultsDiv.style.display = 'none';
+    });
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doSearch();
+  });
+  btn.addEventListener('click', doSearch);
+
+  // Close results on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#address-search')) resultsDiv.style.display = 'none';
+  });
+})();
+
+init().catch(err => {
+  console.error('Failed to load data:', err);
+  document.querySelector('.loading-text').textContent = 'Error loading data. Please refresh.';
+});
+</script>
+</body>
+</html>

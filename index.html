@@ -1186,7 +1186,7 @@ async function init() {
   });
 }
 
-// Address search with autocomplete
+// Address search with NYC GeoSearch autocomplete
 (function() {
   const input = document.getElementById('search-input');
   const btn = document.getElementById('search-btn');
@@ -1194,131 +1194,55 @@ async function init() {
   const statusDiv = document.getElementById('search-status');
   let searchMarker = null;
   let debounceTimer = null;
-  let addressIndex = null;
+  let selectedIndex = -1;
 
-  // Build address index from loaded complaints (called after data loads)
-  function buildAddressIndex() {
-    const addrMap = new Map();
-    for (const c of allComplaints) {
-      const addr = c.incident_address || c.a;
-      if (!addr) continue;
-      if (!addrMap.has(addr)) {
-        addrMap.set(addr, { count: 0, lat: 0, lng: 0, borough: c.borough || c.b || '', cb: c.community_board || c.cb || '' });
-      }
-      const entry = addrMap.get(addr);
-      entry.count++;
-      entry.lat += parseFloat(c.latitude || c.lat);
-      entry.lng += parseFloat(c.longitude || c.lng);
-    }
-    // Pre-sort by count so top results come first
-    addressIndex = [...addrMap.entries()]
-      .map(([addr, d]) => ({ addr, count: d.count, lat: d.lat / d.count, lng: d.lng / d.count, borough: d.borough, cb: d.cb }))
-      .sort((a, b) => b.count - a.count);
-  }
-
-  // Autocomplete from complaint data
-  function showAutocomplete(query) {
-    if (!addressIndex || query.length < 2) { resultsDiv.style.display = 'none'; return; }
-
-    const q = query.toUpperCase();
-    const matches = addressIndex.filter(e => e.addr.includes(q)).slice(0, 8);
-    if (!matches.length) { resultsDiv.style.display = 'none'; return; }
-
-    resultsDiv.style.display = 'block';
-    resultsDiv.innerHTML = '';
-    for (const m of matches) {
-      const div = document.createElement('div');
-      div.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;';
-      const neighborhood = getNeighborhood(m.cb);
-      div.innerHTML = `<span>${titleCase(m.addr)}${neighborhood ? '<span style="color:var(--text-dim);font-size:10px;margin-left:6px;">' + neighborhood + '</span>' : ''}</span><span style="color:var(--amber);font-size:11px;font-weight:600;">${m.count}</span>`;
-      div.addEventListener('mouseenter', () => div.style.background = 'var(--surface-hover)');
-      div.addEventListener('mouseleave', () => div.style.background = 'none');
-      div.addEventListener('click', () => {
-        input.value = titleCase(m.addr);
-        goToLocal(m);
-        resultsDiv.style.display = 'none';
-      });
-      resultsDiv.appendChild(div);
-    }
-  }
-
-  function goToLocal(m) {
-    if (searchMarker) map.removeLayer(searchMarker);
-
-    const complaints = m.count;
-    searchMarker = L.circleMarker([m.lat, m.lng], {
-      radius: 10,
-      fillColor: '#dde44c',
-      fillOpacity: 0.9,
-      color: '#fff',
-      weight: 2
-    }).addTo(map);
-
-    const neighborhood = getNeighborhood(m.cb);
-    searchMarker.bindPopup(`<div style="font-size:13px;"><strong>${titleCase(m.addr)}</strong><br><span style="color:var(--text-dim);font-size:11px;">${neighborhood ? neighborhood + ', ' : ''}${titleCase(m.borough)}</span><br><span style="color:var(--amber);font-weight:600;">${complaints} complaint${complaints !== 1 ? 's' : ''}</span></div>`).openPopup();
-
-    map.flyTo([m.lat, m.lng], 16, { duration: 1 });
-    showClearLink();
-  }
-
-  async function doSearch() {
-    const query = input.value.trim();
-    if (!query) return;
-
-    // First check local data
-    if (addressIndex) {
-      const q = query.toUpperCase();
-      const exact = addressIndex.find(e => e.addr === q);
-      if (exact) { goToLocal(exact); resultsDiv.style.display = 'none'; return; }
-    }
-
-    // Fall back to Nominatim geocoder
-    const fullQuery = /new york|nyc|brooklyn|bronx|queens|manhattan|staten island/i.test(query)
-      ? query
-      : query + ', New York City';
-
-    statusDiv.style.display = 'block';
-    statusDiv.textContent = 'Searching...';
-    resultsDiv.style.display = 'none';
-
+  // NYC GeoSearch API — free, no key, covers all five boroughs
+  async function fetchSuggestions(query) {
+    if (query.length < 3) { resultsDiv.style.display = 'none'; return; }
     try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullQuery)}&countrycodes=us&viewbox=-74.3,40.45,-73.65,40.95&bounded=1&limit=5&addressdetails=1`;
-      const res = await fetch(url, { headers: { 'User-Agent': 'StreetlightOutageMap/1.0' } });
-      const results = await res.json();
+      const url = `https://geosearch.planninglabs.nyc/v2/autocomplete?text=${encodeURIComponent(query)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const features = (data.features || []).slice(0, 8);
+      if (!features.length) { resultsDiv.style.display = 'none'; return; }
 
-      if (!results.length) {
-        statusDiv.textContent = 'No results found.';
-        return;
-      }
-
-      if (results.length === 1) {
-        goToGeocode(results[0]);
-        return;
-      }
-
-      statusDiv.style.display = 'none';
+      selectedIndex = -1;
       resultsDiv.style.display = 'block';
       resultsDiv.innerHTML = '';
-      for (const r of results) {
+      features.forEach((f, i) => {
+        const props = f.properties;
+        const label = props.label || props.name || '';
+        const borough = props.borough || '';
+        const neighborhood = props.neighbourhood || '';
+        const sublabel = [neighborhood, borough].filter(Boolean).join(', ');
+
         const div = document.createElement('div');
         div.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);';
-        div.textContent = r.display_name.replace(/, United States$/, '').replace(/, New York, NY$/, ', NY');
-        div.addEventListener('mouseenter', () => div.style.background = 'var(--surface-hover)');
-        div.addEventListener('mouseleave', () => div.style.background = 'none');
-        div.addEventListener('click', () => {
-          goToGeocode(r);
-          resultsDiv.style.display = 'none';
-        });
+        div.dataset.index = i;
+        div.innerHTML = `<div style="color:var(--text);font-size:12px;">${label}</div>${sublabel ? `<div style="color:var(--text-dim);font-size:10px;margin-top:2px;">${sublabel}</div>` : ''}`;
+        div.addEventListener('mouseenter', () => { div.style.background = 'var(--surface-hover)'; selectedIndex = i; highlightItem(); });
+        div.addEventListener('mouseleave', () => { div.style.background = 'none'; });
+        div.addEventListener('click', () => selectResult(f));
         resultsDiv.appendChild(div);
-      }
+      });
     } catch (err) {
-      statusDiv.textContent = 'Search failed. Try again.';
+      resultsDiv.style.display = 'none';
     }
   }
 
-  function goToGeocode(r) {
-    const lat = parseFloat(r.lat);
-    const lng = parseFloat(r.lon);
+  function highlightItem() {
+    resultsDiv.querySelectorAll('div[data-index]').forEach(d => {
+      d.style.background = parseInt(d.dataset.index) === selectedIndex ? 'var(--surface-hover)' : 'none';
+    });
+  }
+
+  function selectResult(feature) {
+    const [lng, lat] = feature.geometry.coordinates;
+    const props = feature.properties;
+    const label = props.label || props.name || '';
+
+    input.value = label;
+    resultsDiv.style.display = 'none';
 
     if (searchMarker) map.removeLayer(searchMarker);
 
@@ -1330,16 +1254,34 @@ async function init() {
       weight: 2
     }).addTo(map);
 
-    const label = r.display_name.replace(/, United States$/, '').replace(/, New York, NY$/, ', NY');
-    searchMarker.bindPopup(`<div style="font-size:13px;"><strong>${label}</strong><br><span style="color:var(--text-dim);font-size:11px;">Search result</span></div>`).openPopup();
+    // Count nearby complaints (within ~100m)
+    let nearbyCount = 0;
+    let nearbyOpen = 0;
+    for (const c of allComplaints) {
+      const clat = parseFloat(c.latitude);
+      const clng = parseFloat(c.longitude);
+      const dlat = clat - lat;
+      const dlng = (clng - lng) * Math.cos(lat * Math.PI / 180);
+      const dist = Math.sqrt(dlat * dlat + dlng * dlng) * 111320; // meters
+      if (dist <= 100) {
+        nearbyCount++;
+        if (c.status === 'Open') nearbyOpen++;
+      }
+    }
 
-    map.flyTo([lat, lng], 16, { duration: 1 });
-    showClearLink();
-  }
+    const borough = props.borough || '';
+    const neighborhood = props.neighbourhood || '';
+    const sublabel = [neighborhood, borough].filter(Boolean).join(', ');
+    const nearbyHtml = nearbyCount > 0
+      ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:12px;"><span style="color:var(--amber);font-weight:600;">${nearbyCount} complaint${nearbyCount !== 1 ? 's' : ''}</span> within 100m${nearbyOpen > 0 ? ` <span style="color:var(--orange);">(${nearbyOpen} open)</span>` : ''}</div>`
+      : `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim);">No complaints within 100m</div>`;
 
-  function showClearLink() {
+    searchMarker.bindPopup(`<div style="min-width:180px;"><strong style="font-size:13px;">${label}</strong><br><span style="color:var(--text-dim);font-size:11px;">${sublabel}</span>${nearbyHtml}</div>`).openPopup();
+
+    map.flyTo([lat, lng], 17, { duration: 1 });
+
     statusDiv.style.display = 'block';
-    statusDiv.innerHTML = `<span style="color:var(--vc-chartreuse);">Showing results near this location.</span> <a href="#" id="clear-search" style="color:var(--text-secondary);text-decoration:underline;">Clear</a>`;
+    statusDiv.innerHTML = `<a href="#" id="clear-search" style="color:var(--text-secondary);text-decoration:underline;font-size:11px;">Clear search</a>`;
     document.getElementById('clear-search').addEventListener('click', (e) => {
       e.preventDefault();
       if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
@@ -1351,25 +1293,41 @@ async function init() {
 
   input.addEventListener('input', () => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => showAutocomplete(input.value.trim()), 150);
+    selectedIndex = -1;
+    debounceTimer = setTimeout(() => fetchSuggestions(input.value.trim()), 200);
   });
 
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { resultsDiv.style.display = 'none'; doSearch(); }
+    const items = resultsDiv.querySelectorAll('div[data-index]');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+      highlightItem();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIndex = Math.max(selectedIndex - 1, 0);
+      highlightItem();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedIndex >= 0 && items.length > 0) {
+        items[selectedIndex].click();
+      } else if (resultsDiv.style.display === 'block' && items.length > 0) {
+        items[0].click();
+      }
+    } else if (e.key === 'Escape') {
+      resultsDiv.style.display = 'none';
+    }
   });
-  btn.addEventListener('click', doSearch);
+
+  btn.addEventListener('click', () => {
+    const items = resultsDiv.querySelectorAll('div[data-index]');
+    if (items.length > 0) items[0].click();
+    else fetchSuggestions(input.value.trim());
+  });
 
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#address-search')) resultsDiv.style.display = 'none';
   });
-
-  // Build index once data is loaded — re-check periodically
-  const indexInterval = setInterval(() => {
-    if (allComplaints.length > 0 && !addressIndex) {
-      buildAddressIndex();
-      clearInterval(indexInterval);
-    }
-  }, 500);
 })();
 
 init().catch(err => {

@@ -230,16 +230,6 @@ html, body { height: 100%; overflow: hidden; font-family: var(--font); backgroun
 </head>
 <body>
 
-<div id="password-gate" style="position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:32px;width:320px;text-align:center;">
-    <h2 style="font-size:18px;font-weight:700;margin-bottom:8px;">311 streetlight outage map</h2>
-    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:20px;">Enter password to view</p>
-    <input type="password" id="pw-input" placeholder="Password" style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:14px;margin-bottom:12px;outline:none;" autofocus>
-    <button id="pw-btn" style="width:100%;padding:10px;background:var(--amber);color:#000;border:none;border-radius:6px;font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;">Enter</button>
-    <div id="pw-error" style="margin-top:10px;font-size:12px;color:var(--red);display:none;">Incorrect password</div>
-  </div>
-</div>
-
 <div id="loading-overlay">
   <div class="loader-ring"></div>
   <div class="loading-text">Loading 311 streetlight complaints...</div>
@@ -353,32 +343,6 @@ html, body { height: 100%; overflow: hidden; font-family: var(--font); backgroun
 </div>
 
 <script>
-// Password gate
-(function() {
-  const gate = document.getElementById('password-gate');
-  const input = document.getElementById('pw-input');
-  const btn = document.getElementById('pw-btn');
-  const err = document.getElementById('pw-error');
-
-  if (sessionStorage.getItem('311-auth') === '1') {
-    gate.style.display = 'none';
-  }
-
-  function checkPassword() {
-    if (input.value === 'vitalcity2026!') {
-      sessionStorage.setItem('311-auth', '1');
-      gate.style.display = 'none';
-    } else {
-      err.style.display = 'block';
-      input.value = '';
-      input.focus();
-    }
-  }
-
-  btn.addEventListener('click', checkPassword);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPassword(); });
-})();
-
 const API_BASE = 'https://data.cityofnewyork.us/resource/erm2-nwe9.json';
 const DATE_STR = '2024-01-01T00:00:00';
 

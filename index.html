@@ -418,6 +418,7 @@ const DARK_DESCRIPTORS = new Set([
 ]);
 
 const EXCLUDE_PATTERNS = [
+  /^999\s/i,
   /\bpark\b/i, /\bplayground\b/i, /\brecreation\b/i,
   /\bmeadows?\b/i, /\bgreenbelt\b/i, /\bbotanical\b/i,
   /\bbridge\b/i, /\bgreenway\b/i, /\besplanade\b/i,
@@ -448,7 +449,7 @@ async function loadStaticData() {
   // Expand compact format back to full objects
   const descriptors = data.d;
   const boroMap = data.b;
-  return data.c.map(r => ({
+  const expanded = data.c.map(r => ({
     latitude: String(r[0]),
     longitude: String(r[1]),
     descriptor: descriptors[r[2]],
@@ -458,6 +459,10 @@ async function loadStaticData() {
     community_board: r[6],
     status: r[7] === 1 ? 'Open' : 'Closed'
   }));
+  // Apply EXCLUDE_PATTERNS to the static cache too — the cache was built
+  // before the 999-prefixed placeholder rule existed, so pre-built rows
+  // still contain "999 [Street]" placeholders that we want to drop.
+  return filterComplaints(expanded);
 }
 
 // Background API refresh to catch new complaints since static file was built
@@ -467,7 +472,7 @@ async function fetchFromAPI() {
   let retries = 0;
   const raw = [];
 
-  const where = `complaint_type='Street Light Condition' AND created_date>'${DATE_STR}' AND latitude IS NOT NULL`;
+  const where = `complaint_type='Street Light Condition' AND created_date>'${DATE_STR}' AND latitude IS NOT NULL AND incident_address NOT LIKE '999 %'`;
 
   while (true) {
     const url = `${API_BASE}?$where=${encodeURIComponent(where)}&$select=descriptor,created_date,latitude,longitude,incident_address,borough,community_board,status&$limit=${limit}&$offset=${offset}&$order=created_date+DESC`;
